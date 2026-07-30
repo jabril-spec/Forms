@@ -12,9 +12,22 @@
   #video{width:100%;height:100vh;object-fit:cover;display:block;}
   .guia{position:fixed;left:8%;right:8%;top:35%;bottom:35%;
     border:3px solid #FF7A00;border-radius:10px;pointer-events:none;
-    box-shadow:0 0 0 2000px rgba(0,0,0,.45);}
+    box-shadow:0 0 0 2000px rgba(0,0,0,.45);overflow:hidden;}
   .guia .etiqueta{position:absolute;top:-26px;left:0;right:0;text-align:center;
     color:#FFB35C;font-size:12px;font-weight:700;text-shadow:0 1px 3px rgba(0,0,0,.7);}
+
+  /* Línea roja tipo "pistola lectora": solo aparece mientras el escaneo
+     continuo de código de barras está activo, para dar feedback visual
+     de que se está leyendo en vivo (no delimita el área real de decodificación,
+     que sigue siendo el recuadro completo .guia). */
+  .laser{position:absolute;left:0;right:0;height:2px;background:#FF3B30;
+    box-shadow:0 0 8px 2px rgba(255,59,48,.9);top:0;display:none;}
+  .guia.escaneando .laser{display:block;animation:barrido 1.4s ease-in-out infinite;}
+  @keyframes barrido{
+    0%{top:4%;}
+    50%{top:96%;}
+    100%{top:4%;}
+  }
 
   #estado{position:fixed;bottom:100px;left:0;right:0;text-align:center;
     font-size:14px;color:#fff;padding:0 24px;text-shadow:0 1px 3px rgba(0,0,0,.6);
@@ -24,8 +37,6 @@
   #cerrar{position:fixed;top:14px;right:14px;background:#fff;color:#12213A;
     border:none;border-radius:8px;padding:8px 14px;font-weight:700;font-size:13px;z-index:5;}
 
-  /* Linterna arriba a la izquierda: antes estaba pegada a los botones
-     inferiores y tapaba el mensaje de estado ("Escaneando..."). */
   #btnTorch{position:fixed;top:14px;left:14px;background:rgba(255,255,255,.9);
     color:#12213A;border:none;border-radius:8px;padding:8px 12px;font-weight:700;
     font-size:13px;z-index:5;}
@@ -37,12 +48,11 @@
   .fila-botones{display:flex;gap:10px;width:100%;max-width:380px;}
   .fila-botones button{flex:1;border:none;border-radius:10px;padding:13px 10px;
     font-weight:700;font-size:13.5px;background:#fff;color:#12213A;}
-  #btnBarras.activo{background:#FF7A00;color:#fff;}
+  #btnBarras.activo{background:#FF3B30;color:#fff;}
   #btnOcr.activo{background:#1B9C63;color:#fff;}
   .fila-botones button:disabled{opacity:.6;}
 
-  #capturaPreview{position:fixed;bottom:190px;left:50%;transform:translateX(-50%);
-    max-width:70%;border:2px solid #1B9C63;border-radius:8px;display:none;}
+  #capturaPreview{display:none;}
 
   #avisoOrigen{position:fixed;top:0;left:0;right:0;background:#D64545;color:#fff;
     font-size:11.5px;text-align:center;padding:5px 10px;z-index:10;display:none;}
@@ -51,7 +61,10 @@
 <body>
   <div id="avisoOrigen">No se recibió el origen de la app. Ábrelo desde la aplicación web, no directamente.</div>
   <video id="video" muted playsinline autoplay></video>
-  <div class="guia"><span class="etiqueta" id="etiquetaGuia">Apunta aquí</span></div>
+  <div class="guia" id="guia">
+    <span class="etiqueta" id="etiquetaGuia">Apunta aquí</span>
+    <div class="laser"></div>
+  </div>
   <canvas id="capturaPreview"></canvas>
   <div id="estado">Iniciando cámara…</div>
 
@@ -60,15 +73,12 @@
 
   <div class="barra-inferior">
     <div class="fila-botones">
-      <button id="btnBarras" onclick="leerCodigoBarras()">📷 Leer código de barras</button>
+      <button id="btnBarras" onclick="alternarEscaneoBarras()">📷 Leer código de barras</button>
       <button id="btnOcr" onclick="leerNumeros()">🔢 Leer números</button>
     </div>
   </div>
 
   <script>
-    // El origen real de tu app llega por la URL (Index.html lo agrega automáticamente
-    // como ?origen=...). Este origen CAMBIA cada vez que publicas una nueva versión
-    // del deployment de Apps Script, así que nunca debe hardcodearse.
     const params = new URLSearchParams(window.location.search);
     const ORIGEN_APP = params.get('origen') || '*';
     if (!params.get('origen')) {
@@ -77,34 +87,19 @@
 
     let trackActual = null;
     let torchEncendida = false;
-    let procesando = false;
-    let intervaloEscaneo = null;
+    let procesandoOcr = false;
 
-    // Región de captura. Un poco más ancha que el recuadro guía visual, para
-    // asegurar el margen en blanco ("zona muda") que CODE_39 necesita a los
-    // costados del código — si se recorta justo al borde del código, ZXing
-    // puede no detectarlo o leerlo mal.
+    // Región de captura: un poco más ancha que el recuadro guía visual,
+    // para dejar la "zona muda" que CODE_39 necesita a los costados.
     const RECORTE = { x: 0.04, y: 0.32, w: 0.92, h: 0.36 };
 
-    const INTENTOS_MAXIMOS_BARRAS = 6;
-    const VOTOS_PARA_CONFIAR = 2;
-
-    // Lector "rápido": solo intenta CODE_39 (el formato usado en el DNI peruano),
-    // así evita perder tiempo probando los ~15 formatos que soporta ZXing.
     const hintsRapido = new Map();
     hintsRapido.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.CODE_39]);
     hintsRapido.set(ZXing.DecodeHintType.TRY_HARDER, true);
-    const lectorRapido = new ZXing.BrowserMultiFormatReader(hintsRapido);
 
-    // Lector "amplio": respaldo por si el formato real no fuera CODE_39.
     const hintsAmplio = new Map();
     hintsAmplio.set(ZXing.DecodeHintType.TRY_HARDER, true);
-    const lectorAmplio = new ZXing.BrowserMultiFormatReader(hintsAmplio);
 
-    // Lectores "de bajo nivel": decodifican directo desde los píxeles del
-    // canvas (getImageData), sin pasar por un <img> ni por el envoltorio del
-    // navegador. Es el camino más directo que ofrece la librería, así que lo
-    // probamos primero; decodeFromImage queda como respaldo más abajo.
     let nucleoRapido = null, nucleoAmplio = null;
     if (ZXing.MultiFormatReader && ZXing.RGBLuminanceSource && ZXing.HybridBinarizer) {
       nucleoRapido = new ZXing.MultiFormatReader();
@@ -119,7 +114,7 @@
       const luminanceSource = new ZXing.RGBLuminanceSource(imageData.data, canvas.width, canvas.height);
       const binaryBitmap = new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(luminanceSource));
       reader.reset();
-      return reader.decode(binaryBitmap); // síncrono: devuelve Result o lanza excepción
+      return reader.decode(binaryBitmap);
     }
 
     function extraerDni(texto) {
@@ -133,30 +128,7 @@
       el.classList.toggle('procesando', !!procesandoVisual);
     }
 
-    function iniciarIndicadorEscaneo(mensajeBase) {
-      detenerIndicadorEscaneo();
-      let puntos = 0;
-      intervaloEscaneo = setInterval(function () {
-        puntos = (puntos + 1) % 4;
-        ponerEstado(mensajeBase + '.'.repeat(puntos), true);
-      }, 400);
-    }
-
-    function detenerIndicadorEscaneo() {
-      if (intervaloEscaneo) {
-        clearInterval(intervaloEscaneo);
-        intervaloEscaneo = null;
-      }
-    }
-
-
-    function actualizarBotones() {
-      document.getElementById('btnBarras').disabled = procesando;
-      document.getElementById('btnOcr').disabled = procesando;
-    }
-
     function enviarDni(dni) {
-      detenerIndicadorEscaneo();
       ponerEstado('DNI detectado: ' + dni, false);
       if (navigator.vibrate) navigator.vibrate(120);
       if (window.opener) {
@@ -165,7 +137,6 @@
       setTimeout(function () { window.close(); }, 700);
     }
 
-    // ---------- Cámara (vista previa simple, sin escaneo continuo) ----------
     async function iniciarCamara() {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -182,9 +153,6 @@
         if (capacidades.torch) {
           document.getElementById('btnTorch').classList.remove('oculto');
         }
-        // Enfoque continuo: en varios celulares la cámara se queda enfocada
-        // a distancia larga si no se le pide explícitamente. Si el navegador
-        // no lo soporta, esto simplemente no hace nada (catch silencioso).
         if (capacidades.focusMode && capacidades.focusMode.includes('continuous')) {
           trackActual.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(function () {});
         }
@@ -202,24 +170,16 @@
       document.getElementById('btnTorch').classList.toggle('torch-on', torchEncendida);
     }
 
-    // El <video> usa object-fit:cover, así que lo que se ve en pantalla NO es
-    // el frame completo de la cámara: el navegador recorta bordes para llenar
-    // la pantalla (más notorio si la cámara entrega un frame ancho/horizontal
-    // y el celular se sostiene en vertical). Esta función traduce el recuadro
-    // guía (definido en % de PANTALLA) a coordenadas del frame CRUDO de la
-    // cámara, para capturar exactamente lo que el usuario ve y alinea.
     function calcularRecorteDesdeGuia() {
       const video = document.getElementById('video');
       const vw = video.videoWidth, vh = video.videoHeight;
       const cw = video.clientWidth, ch = video.clientHeight;
       if (!vw || !vh || !cw || !ch) return null;
 
-      const escala = Math.max(cw / vw, ch / vh); // mismo criterio que object-fit: cover
+      const escala = Math.max(cw / vw, ch / vh);
       const offsetX = (vw * escala - cw) / 2;
       const offsetY = (vh * escala - ch) / 2;
 
-      // Recuadro guía en píxeles de pantalla (coincide con el CSS .guia),
-      // con un margen extra de 3% para dejar zona muda alrededor del código.
       const mx = cw * 0.03, my = ch * 0.03;
       const dispXmin = Math.max(0, cw * 0.08 - mx);
       const dispXmax = Math.min(cw, cw * 0.92 + mx);
@@ -241,14 +201,6 @@
       };
     }
 
-    let ultimaResolucionBarras = '';
-
-    // Captura el recuadro guía (tal como se ve en pantalla) como canvas, con
-    // un filtro opcional. Si el recorte resultante queda con pocos píxeles
-    // de ancho (la cámara puede no estar entregando en verdad 1920x1080 aunque
-    // se lo pidamos), lo escala hacia arriba antes de decodificar — con muy
-    // pocos píxeles por barra, ZXing puede fallar aunque a simple vista en el
-    // celular el código se vea nítido.
     function capturarFrame(filtro) {
       const video = document.getElementById('video');
       if (!video.videoWidth) return null;
@@ -265,23 +217,13 @@
       const canvas = document.getElementById('capturaPreview');
       canvas.width = salidaW;
       canvas.height = salidaH;
-      canvas.style.display = 'block';
       const ctx = canvas.getContext('2d');
       ctx.imageSmoothingEnabled = true;
       ctx.filter = filtro || 'none';
       ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, salidaW, salidaH);
-
-      ultimaResolucionBarras = 'cámara ' + w + 'x' + h + ', recorte ' + Math.round(cropW) + 'x' + Math.round(cropH) +
-        (factorEscala > 1 ? ' → escalado a ' + salidaW + 'x' + salidaH : '');
-
       return canvas;
     }
 
-    // Carga el canvas capturado como un <img> real. La variante de dos
-    // argumentos decodeFromImage(undefined, dataUrl) resultó no decodificar
-    // nunca (por eso fallaba con CUALQUIER formato, incluidos códigos limpios
-    // generados en la web) — la forma confiable de la librería es pasarle un
-    // elemento <img> ya cargado.
     function canvasComoImagen(canvas) {
       return new Promise(function (resolve, reject) {
         const img = new Image();
@@ -291,117 +233,134 @@
       });
     }
 
-    let ultimoErrorBarras = null;
+    let lectorRapidoImg = null;
 
-    // Un solo intento de decodificación sobre un canvas ya capturado.
-    // Orden: 1) núcleo rápido (CODE_39, directo sobre píxeles), 2) núcleo
-    // amplio (todos los formatos), 3) respaldo vía <img> + decodeFromImage.
     async function intentarDecodificar(canvas) {
       if (nucleoRapido) {
         try {
           const r = decodificarCanvasNucleo(nucleoRapido, canvas);
           const dni = extraerDni(r.getText());
           if (dni.length === 8) return dni;
-        } catch (eA) { ultimoErrorBarras = eA; }
+        } catch (eA) {}
 
         try {
           const r2 = decodificarCanvasNucleo(nucleoAmplio, canvas);
           const dni2 = extraerDni(r2.getText());
           if (dni2.length === 8) return dni2;
-        } catch (eB) { ultimoErrorBarras = eB; }
+        } catch (eB) {}
       }
 
       try {
+        if (!lectorRapidoImg) lectorRapidoImg = new ZXing.BrowserMultiFormatReader(hintsRapido);
         const img = await canvasComoImagen(canvas);
-        const r3 = await lectorRapido.decodeFromImage(img);
+        const r3 = await lectorRapidoImg.decodeFromImage(img);
         const dni3 = extraerDni(r3.getText());
         if (dni3.length === 8) return dni3;
-      } catch (eC) { ultimoErrorBarras = eC; }
+      } catch (eC) {}
 
       return null;
     }
 
-    // ---------- Código de barras: ráfaga de capturas + validación por consenso ----------
-    // Una sola foto puede salir borrosa o el lector puede "alucinar" un
-    // resultado con ruido. Por eso se toman varias fotos seguidas y solo se
-    // acepta un DNI si se leyó igual al menos 2 veces — así se filtran las
-    // lecturas incorrectas en vez de aceptar la primera que aparezca.
-    async function leerCodigoBarras() {
-      if (procesando) return;
+    // ---------- Código de barras: ESCANEO CONTINUO ----------
+    // En vez de tomar una ráfaga fija de fotos y rendirse, esto decodifica
+    // frames uno tras otro sin límite mientras el usuario mantiene el modo
+    // activo — igual que hacen los lectores de código de barras comerciales.
+    // Basta con que UN frame nítido pase por el recuadro para detectar el
+    // código; con foto suelta dependías de que esos 6 intentos puntuales
+    // coincidieran con el momento exacto de enfoque correcto.
+    let escaneoActivo = false;
+    let cicloEscaneoId = null;
+    let intentoNum = 0;
+    const votos = {};
+    const VOTOS_PARA_CONFIAR = 2; // exige 2 lecturas iguales para evitar falsos positivos por ruido
 
+    function alternarEscaneoBarras() {
+      if (escaneoActivo) {
+        detenerEscaneoBarras('Escaneo detenido.');
+      } else {
+        iniciarEscaneoBarras();
+      }
+    }
+
+    function iniciarEscaneoBarras() {
+      if (procesandoOcr) return;
       if (typeof ZXing === 'undefined' || !ZXing.BrowserMultiFormatReader) {
         ponerEstado('No se pudo cargar la librería de código de barras. Revisa tu conexión y recarga esta página.', false);
         return;
       }
-
-      procesando = true;
-      actualizarBotones();
-      document.getElementById('btnBarras').classList.add('activo');
-      document.getElementById('btnOcr').classList.remove('activo');
-      document.getElementById('etiquetaGuia').textContent = 'Código de barras';
-
       if (!document.getElementById('video').videoWidth) {
-        procesando = false;
-        actualizarBotones();
         ponerEstado('La cámara aún no está lista, espera un momento.', false);
         return;
       }
 
-      const votos = {};
-      let dniGanador = null;
-      ultimoErrorBarras = null;
+      escaneoActivo = true;
+      intentoNum = 0;
+      for (const k in votos) delete votos[k];
 
-      for (let intento = 1; intento <= INTENTOS_MAXIMOS_BARRAS && !dniGanador; intento++) {
-        iniciarIndicadorEscaneo('Leyendo código de barras (' + intento + '/' + INTENTOS_MAXIMOS_BARRAS + ')');
+      document.getElementById('btnBarras').textContent = '⏹ Detener escaneo';
+      document.getElementById('btnBarras').classList.add('activo');
+      document.getElementById('btnOcr').disabled = true;
+      document.getElementById('btnOcr').classList.remove('activo');
+      document.getElementById('etiquetaGuia').textContent = 'Escaneando…';
+      document.getElementById('guia').classList.add('escaneando');
 
-        // Alterna con/sin filtro de contraste entre intentos: en algunas
-        // condiciones de luz el filtro ayuda, en otras estorba.
-        const filtro = (intento % 2 === 1) ? 'grayscale(1) contrast(1.15)' : 'none';
-        const canvas = capturarFrame(filtro);
-        if (!canvas) break;
+      cicloEscanearFrame();
+    }
 
+    function detenerEscaneoBarras(mensaje) {
+      escaneoActivo = false;
+      if (cicloEscaneoId) { clearTimeout(cicloEscaneoId); cicloEscaneoId = null; }
+      document.getElementById('btnBarras').textContent = '📷 Leer código de barras';
+      document.getElementById('btnBarras').classList.remove('activo');
+      document.getElementById('btnOcr').disabled = false;
+      document.getElementById('guia').classList.remove('escaneando');
+      document.getElementById('etiquetaGuia').textContent = 'Apunta aquí';
+      if (mensaje) ponerEstado(mensaje, false);
+    }
+
+    async function cicloEscanearFrame() {
+      if (!escaneoActivo) return;
+      intentoNum++;
+
+      // Alterna con/sin filtro de contraste entre intentos: en algunas
+      // condiciones de luz ayuda, en otras estorba.
+      const filtro = (intentoNum % 2 === 1) ? 'grayscale(1) contrast(1.15)' : 'none';
+      const canvas = capturarFrame(filtro);
+
+      if (canvas) {
         const dni = await intentarDecodificar(canvas);
         if (dni) {
           votos[dni] = (votos[dni] || 0) + 1;
           if (votos[dni] >= VOTOS_PARA_CONFIAR) {
-            dniGanador = dni;
-            break;
+            detenerEscaneoBarras(null);
+            enviarDni(dni);
+            return;
           }
         }
-
-        // Pequeña pausa entre intentos para que la cámara entregue un frame
-        // distinto (ayuda si el enfoque automático aún está ajustando).
-        await new Promise(function (r) { setTimeout(r, 180); });
       }
 
-      document.getElementById('capturaPreview').style.display = 'none';
-      detenerIndicadorEscaneo();
-      procesando = false;
-      actualizarBotones();
+      ponerEstado('Escaneando código de barras… (intento ' + intentoNum + ')', true);
 
-      if (dniGanador) {
-        enviarDni(dniGanador);
-      } else {
-        const detalle = ultimoErrorBarras
-          ? ' [detalle: ' + (ultimoErrorBarras.name || 'Error') + ': ' + (ultimoErrorBarras.message || ultimoErrorBarras) + ']'
-          : '';
-        ponerEstado('No se pudo leer el código de forma confiable. Acércate más, evita reflejos y vuelve a intentar.' + detalle, false);
+      if (escaneoActivo) {
+        // Pausa corta entre intentos: deja que la cámara entregue un frame
+        // distinto y evita saturar el hilo principal en celulares más lentos.
+        cicloEscaneoId = setTimeout(cicloEscanearFrame, 120);
       }
     }
 
     // ---------- Números impresos del DNI (OCR) ----------
     async function leerNumeros() {
-      if (procesando) return;
-      procesando = true;
-      actualizarBotones();
+      if (procesandoOcr || escaneoActivo) return;
+      procesandoOcr = true;
+      document.getElementById('btnBarras').disabled = true;
       document.getElementById('btnOcr').classList.add('activo');
-      document.getElementById('btnBarras').classList.remove('activo');
       document.getElementById('etiquetaGuia').textContent = 'Número de DNI';
 
       const canvas = capturarFrame('grayscale(1) contrast(1.25)');
       if (!canvas) {
-        procesando = false;
-        actualizarBotones();
+        procesandoOcr = false;
+        document.getElementById('btnBarras').disabled = false;
+        document.getElementById('btnOcr').classList.remove('activo');
         ponerEstado('La cámara aún no está lista, espera un momento.', false);
         return;
       }
@@ -410,7 +369,7 @@
       try {
         const resultado = await Tesseract.recognize(canvas, 'eng', {
           tessedit_char_whitelist: '0123456789',
-          tessedit_pageseg_mode: '7', // trata la imagen como una sola línea: más rápido y preciso para este caso
+          tessedit_pageseg_mode: '7',
           logger: function (m) {
             if (m.status === 'recognizing text') {
               ponerEstado('Procesando… ' + Math.round(m.progress * 100) + '%', true);
@@ -419,9 +378,9 @@
             }
           }
         });
-        canvas.style.display = 'none';
-        procesando = false;
-        actualizarBotones();
+        procesandoOcr = false;
+        document.getElementById('btnBarras').disabled = false;
+        document.getElementById('btnOcr').classList.remove('activo');
         const texto = resultado.data.text || '';
         const dni = extraerDni(texto);
         if (dni.length === 8) {
@@ -430,9 +389,9 @@
           ponerEstado('No se pudo leer un DNI válido. Intenta con más luz o mejor encuadre.', false);
         }
       } catch (e) {
-        canvas.style.display = 'none';
-        procesando = false;
-        actualizarBotones();
+        procesandoOcr = false;
+        document.getElementById('btnBarras').disabled = false;
+        document.getElementById('btnOcr').classList.remove('activo');
         ponerEstado('Error al leer los números, intenta de nuevo.', false);
       }
     }
