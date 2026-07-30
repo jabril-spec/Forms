@@ -241,8 +241,14 @@
       };
     }
 
+    let ultimaResolucionBarras = '';
+
     // Captura el recuadro guía (tal como se ve en pantalla) como canvas, con
-    // un filtro opcional para ayudar a distinguir mejor las barras/números.
+    // un filtro opcional. Si el recorte resultante queda con pocos píxeles
+    // de ancho (la cámara puede no estar entregando en verdad 1920x1080 aunque
+    // se lo pidamos), lo escala hacia arriba antes de decodificar — con muy
+    // pocos píxeles por barra, ZXing puede fallar aunque a simple vista en el
+    // celular el código se vea nítido.
     function capturarFrame(filtro) {
       const video = document.getElementById('video');
       if (!video.videoWidth) return null;
@@ -250,13 +256,24 @@
       const w = video.videoWidth, h = video.videoHeight;
       const cropX = w * recorte.x, cropY = h * recorte.y;
       const cropW = w * recorte.w, cropH = h * recorte.h;
+
+      const ANCHO_MINIMO = 900;
+      const factorEscala = cropW < ANCHO_MINIMO ? (ANCHO_MINIMO / cropW) : 1;
+      const salidaW = Math.round(cropW * factorEscala);
+      const salidaH = Math.round(cropH * factorEscala);
+
       const canvas = document.getElementById('capturaPreview');
-      canvas.width = cropW;
-      canvas.height = cropH;
+      canvas.width = salidaW;
+      canvas.height = salidaH;
       canvas.style.display = 'block';
       const ctx = canvas.getContext('2d');
+      ctx.imageSmoothingEnabled = true;
       ctx.filter = filtro || 'none';
-      ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+      ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, salidaW, salidaH);
+
+      ultimaResolucionBarras = 'cámara ' + w + 'x' + h + ', recorte ' + Math.round(cropW) + 'x' + Math.round(cropH) +
+        (factorEscala > 1 ? ' → escalado a ' + salidaW + 'x' + salidaH : '');
+
       return canvas;
     }
 
