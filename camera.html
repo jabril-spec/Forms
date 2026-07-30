@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
 <title>Escáner DNI</title>
 <script src="https://unpkg.com/@zxing/library@0.20.0/umd/index.min.js"></script>
+<script src="https://unpkg.com/tesseract.js@5/dist/tesseract.min.js"></script>
 <style>
   *{box-sizing:border-box;}
   html,body{margin:0;padding:0;background:#000;height:100%;font-family:'Segoe UI',Roboto,Arial,sans-serif;}
@@ -12,65 +13,169 @@
   .guia{position:fixed;left:8%;right:8%;top:35%;bottom:35%;
     border:3px solid #FF7A00;border-radius:10px;pointer-events:none;
     box-shadow:0 0 0 2000px rgba(0,0,0,.45);}
-  #estado{position:fixed;bottom:24px;left:0;right:0;text-align:center;
+  .guia .etiqueta{position:absolute;top:-26px;left:0;right:0;text-align:center;
+    color:#FFB35C;font-size:12px;font-weight:700;text-shadow:0 1px 3px rgba(0,0,0,.7);}
+
+  #estado{position:fixed;bottom:96px;left:0;right:0;text-align:center;
     font-size:14px;color:#fff;padding:0 24px;text-shadow:0 1px 3px rgba(0,0,0,.6);}
+
+  .tabs-modo{position:fixed;top:14px;left:14px;right:90px;display:flex;gap:8px;z-index:5;}
+  .tabs-modo button{flex:1;padding:9px 6px;border-radius:8px;border:1.5px solid rgba(255,255,255,.5);
+    background:rgba(0,0,0,.4);color:#fff;font-weight:700;font-size:12.5px;}
+  .tabs-modo button.activo{background:#FF7A00;border-color:#FF7A00;}
+
   #cerrar{position:fixed;top:14px;right:14px;background:#fff;color:#12213A;
-    border:none;border-radius:8px;padding:8px 16px;font-weight:700;font-size:13px;}
+    border:none;border-radius:8px;padding:8px 14px;font-weight:700;font-size:13px;z-index:5;}
+
+  .barra-inferior{position:fixed;bottom:20px;left:0;right:0;display:flex;
+    justify-content:center;gap:12px;padding:0 20px;z-index:5;}
+  .barra-inferior button{border:none;border-radius:10px;padding:13px 20px;
+    font-weight:700;font-size:14.5px;background:#fff;color:#12213A;}
+  .barra-inferior button.torch-on{background:#FF7A00;color:#fff;}
+
+  #capturaPreview{position:fixed;bottom:150px;left:50%;transform:translateX(-50%);
+    max-width:70%;border:2px solid #FF7A00;border-radius:8px;display:none;}
 </style>
 </head>
 <body>
   <video id="video" muted playsinline autoplay></video>
-  <div class="guia"></div>
+  <div class="guia"><span class="etiqueta" id="etiquetaGuia">Código de barras</span></div>
+  <canvas id="capturaPreview"></canvas>
   <div id="estado">Iniciando cámara…</div>
+
+  <div class="tabs-modo">
+    <button id="tabBarras" class="activo" onclick="cambiarModo('barras')">Código de barras</button>
+    <button id="tabOcr" onclick="cambiarModo('ocr')">Leer números</button>
+  </div>
   <button id="cerrar" onclick="window.close()">Cerrar</button>
 
-  <script>
-    // ⚠️ IMPORTANTE — reemplaza este valor por el ORIGEN real de tu web app.
-    // Ábrela en el navegador y copia lo que aparece en la barra de direcciones
-    // SOLO hasta el dominio, por ejemplo:
-    //   https://n-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX.script.googleusercontent.com
-    // Mientras pruebas puedes dejarlo en '*', pero para producción restringe el origen.
-    const ORIGEN_APP = '*';
+  <div class="barra-inferior">
+    <button id="btnTorch" class="oculto" onclick="alternarLinterna()">💡 Linterna</button>
+    <button id="btnCapturar" class="oculto" onclick="capturarYLeerOcr()">📸 Capturar y leer</button>
+  </div>
 
-    const lector = new ZXing.BrowserMultiFormatReader();
+  <script>
+    // ⚠️ IMPORTANTE — usa el origen real de tu web app (ya lo tienes configurado).
+    const ORIGEN_APP = 'https://script.google.com/macros/s/AKfycbxQnVR4BpUYMjcGnA74vznqx94fflzBRoGJyb_ovOFaQibqpfoimQaWOgQwJq5j12WNTw/exec';
+
+    let modo = 'barras';
+    let lector = null;
     let bloqueadoHasta = 0;
+    let trackActual = null;
+    let torchEncendida = false;
+    let ocrEnProceso = false;
 
     function extraerDni(texto) {
       const m = String(texto).match(/\d{8}/);
       return m ? m[0] : String(texto).replace(/\D/g, '').slice(0, 8);
     }
 
-    lector.listVideoInputDevices().then(function (dispositivos) {
-      if (!dispositivos.length) {
-        document.getElementById('estado').textContent = 'No se detectó ninguna cámara en este dispositivo.';
-        return;
+    function enviarDni(dni) {
+      document.getElementById('estado').textContent = 'DNI detectado: ' + dni;
+      if (navigator.vibrate) navigator.vibrate(120);
+      if (window.opener) {
+        window.opener.postMessage({ tipo: 'dni-detectado', dni: dni }, ORIGEN_APP);
       }
-      let deviceId = dispositivos[0].deviceId;
-      const trasera = dispositivos.find(d => /back|trasera|rear|environment/i.test(d.label));
-      if (trasera) deviceId = trasera.deviceId;
+      setTimeout(function () { window.close(); }, 700);
+    }
 
-      lector.decodeFromVideoDevice(deviceId, 'video', function (resultado) {
-        if (!resultado) return;
+    function cambiarModo(nuevoModo) {
+      modo = nuevoModo;
+      const esBarras = modo === 'barras';
+      document.getElementById('tabBarras').classList.toggle('activo', esBarras);
+      document.getElementById('tabOcr').classList.toggle('activo', !esBarras);
+      document.getElementById('etiquetaGuia').textContent = esBarras ? 'Código de barras' : 'Número de DNI';
+      document.getElementById('btnCapturar').classList.toggle('oculto', esBarras);
+      document.getElementById('estado').textContent = esBarras
+        ? 'Apunta al código de barras del DNI.'
+        : 'Encuadra los 8 números del DNI y presiona "Capturar y leer".';
+    }
+
+    // ---------- Cámara ----------
+    navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: { ideal: 'environment' },
+        width: { ideal: 1920 },
+        height: { ideal: 1080 }
+      }
+    }).then(function (stream) {
+      const video = document.getElementById('video');
+      video.srcObject = stream;
+      trackActual = stream.getVideoTracks()[0];
+
+      // Linterna, si el dispositivo la soporta
+      const capacidades = trackActual.getCapabilities ? trackActual.getCapabilities() : {};
+      if (capacidades.torch) {
+        document.getElementById('btnTorch').classList.remove('oculto');
+      }
+
+      // Lector de código de barras con "buscar más a fondo"
+      const hints = new Map();
+      hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+      lector = new ZXing.BrowserMultiFormatReader(hints);
+
+      lector.decodeFromVideoElement(video, function (resultado) {
+        if (!resultado || modo !== 'barras') return;
         const ahora = Date.now();
         if (ahora < bloqueadoHasta) return;
         const dni = extraerDni(resultado.getText());
         if (dni.length !== 8) return;
-
         bloqueadoHasta = ahora + 2500;
-        if (navigator.vibrate) navigator.vibrate(120);
-        document.getElementById('estado').textContent = 'DNI detectado: ' + dni;
-
-        if (window.opener) {
-          window.opener.postMessage({ tipo: 'dni-detectado', dni: dni }, ORIGEN_APP);
-        }
-        setTimeout(function () { window.close(); }, 600);
+        enviarDni(dni);
       });
 
-      document.getElementById('estado').textContent = 'Apunta al código de barras del DNI.';
+      cambiarModo('barras');
     }).catch(function () {
       document.getElementById('estado').textContent =
         'No se pudo acceder a la cámara (revisa los permisos del navegador).';
     });
+
+    function alternarLinterna() {
+      if (!trackActual) return;
+      torchEncendida = !torchEncendida;
+      trackActual.applyConstraints({ advanced: [{ torch: torchEncendida }] }).catch(function () {});
+      document.getElementById('btnTorch').classList.toggle('torch-on', torchEncendida);
+    }
+
+    // ---------- OCR de respaldo (lee los números impresos del DNI) ----------
+    function capturarYLeerOcr() {
+      if (ocrEnProceso) return;
+      const video = document.getElementById('video');
+      if (!video.videoWidth) return;
+
+      ocrEnProceso = true;
+      document.getElementById('estado').textContent = 'Leyendo números…';
+
+      // Recorta la zona de la guía (aprox.) para no procesar la imagen completa
+      const w = video.videoWidth, h = video.videoHeight;
+      const cropX = w * 0.08, cropY = h * 0.35, cropW = w * 0.84, cropH = h * 0.30;
+
+      const canvas = document.getElementById('capturaPreview');
+      canvas.width = cropW;
+      canvas.height = cropH;
+      canvas.style.display = 'block';
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+
+      Tesseract.recognize(canvas, 'eng', {
+        tessedit_char_whitelist: '0123456789'
+      }).then(function (resultado) {
+        canvas.style.display = 'none';
+        ocrEnProceso = false;
+        const texto = resultado.data.text || '';
+        const dni = extraerDni(texto);
+        if (dni.length === 8) {
+          enviarDni(dni);
+        } else {
+          document.getElementById('estado').textContent =
+            'No se pudo leer un DNI válido, intenta de nuevo con más luz o encuadre.';
+        }
+      }).catch(function () {
+        canvas.style.display = 'none';
+        ocrEnProceso = false;
+        document.getElementById('estado').textContent = 'Error al leer los números, intenta de nuevo.';
+      });
+    }
   </script>
 </body>
 </html>
