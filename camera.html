@@ -38,9 +38,13 @@
 
   #capturaPreview{position:fixed;bottom:190px;left:50%;transform:translateX(-50%);
     max-width:70%;border:2px solid #1B9C63;border-radius:8px;display:none;}
+
+  #avisoOrigen{position:fixed;top:0;left:0;right:0;background:#D64545;color:#fff;
+    font-size:11.5px;text-align:center;padding:5px 10px;z-index:10;display:none;}
 </style>
 </head>
 <body>
+  <div id="avisoOrigen">No se recibió el origen de la app. Ábrelo desde la aplicación web, no directamente.</div>
   <video id="video" muted playsinline autoplay></video>
   <div class="guia"><span class="etiqueta" id="etiquetaGuia">Código de barras</span></div>
   <canvas id="capturaPreview"></canvas>
@@ -57,11 +61,18 @@
   </div>
 
   <script>
-    // El origen real de tu app llega por la URL (Index.html lo agrega automáticamente).
-    // Si no llega ninguno, se usa '*' como respaldo.
+    // El origen real de tu app llega por la URL (Index.html lo agrega automáticamente
+    // como ?origen=...). Este origen CAMBIA cada vez que publicas una nueva versión
+    // del deployment de Apps Script (es un dominio *.googleusercontent.com generado
+    // por Google para el sandbox del iframe), así que NUNCA debe hardcodearse:
+    // si se hardcodea, postMessage() falla en silencio en cuanto se hace un
+    // nuevo deployment, porque el "origen real" ya no coincide con el hardcodeado.
     const params = new URLSearchParams(window.location.search);
-    
-    const ORIGEN_APP = 'https://script.google.com/macros/s/AKfycbxQnVR4BpUYMjcGnA74vznqx94fflzBRoGJyb_ovOFaQibqpfoimQaWOgQwJq5j12WNTw/exec';
+    const ORIGEN_APP = params.get('origen') || '*';
+
+    if (!params.get('origen')) {
+      document.getElementById('avisoOrigen').style.display = 'block';
+    }
 
     let modo = 'barras';
     let lector = null;
@@ -69,6 +80,7 @@
     let trackActual = null;
     let torchEncendida = false;
     let ocrEnProceso = false;
+    let intervaloEscaneo = null;
 
     function extraerDni(texto) {
       const m = String(texto).match(/\d{8}/);
@@ -81,7 +93,27 @@
       el.classList.toggle('procesando', !!procesando);
     }
 
+    // Indicador de "vivo" para el escaneo de código de barras: como es una
+    // lectura continua (no hay un % real como en el OCR), mostramos puntos
+    // animados para que se note que la cámara sigue buscando activamente.
+    function iniciarIndicadorEscaneo() {
+      detenerIndicadorEscaneo();
+      let puntos = 0;
+      intervaloEscaneo = setInterval(function () {
+        puntos = (puntos + 1) % 4;
+        ponerEstado('Escaneando código de barras' + '.'.repeat(puntos), true);
+      }, 450);
+    }
+
+    function detenerIndicadorEscaneo() {
+      if (intervaloEscaneo) {
+        clearInterval(intervaloEscaneo);
+        intervaloEscaneo = null;
+      }
+    }
+
     function enviarDni(dni) {
+      detenerIndicadorEscaneo();
       ponerEstado('DNI detectado: ' + dni, false);
       if (navigator.vibrate) navigator.vibrate(120);
       if (window.opener) {
@@ -95,7 +127,7 @@
       document.getElementById('btnBarras').classList.add('activo');
       document.getElementById('btnOcr').classList.remove('activo');
       document.getElementById('etiquetaGuia').textContent = 'Código de barras';
-      ponerEstado('Apunta al código de barras del DNI.', false);
+      iniciarIndicadorEscaneo();
     }
 
     // ---------- Cámara + escaneo continuo de código de barras ----------
@@ -120,6 +152,7 @@
       bloqueadoHasta = ahora + 2500;
       enviarDni(dni);
     }).catch(function () {
+      detenerIndicadorEscaneo();
       ponerEstado('No se pudo acceder a la cámara (revisa los permisos del navegador).', false);
     });
 
@@ -131,7 +164,7 @@
       if (capacidades.torch) {
         document.getElementById('btnTorch').classList.remove('oculto');
       }
-      ponerEstado('Apunta al código de barras del DNI.', false);
+      if (modo === 'barras') iniciarIndicadorEscaneo();
     });
 
     function alternarLinterna() {
@@ -148,6 +181,7 @@
       if (!video.videoWidth) return;
 
       modo = 'ocr';
+      detenerIndicadorEscaneo();
       document.getElementById('btnOcr').classList.add('activo');
       document.getElementById('btnBarras').classList.remove('activo');
       document.getElementById('etiquetaGuia').textContent = 'Número de DNI';
