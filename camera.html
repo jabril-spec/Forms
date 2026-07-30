@@ -43,6 +43,10 @@
   #btnTorch.torch-on{background:#FF7A00;color:#fff;}
   #btnTorch.oculto{display:none;}
 
+  #btnGirar{position:fixed;top:60px;left:14px;background:rgba(255,255,255,.9);
+    color:#12213A;border:none;border-radius:8px;padding:6px 10px;font-weight:700;
+    font-size:12px;z-index:5;}
+
   .barra-inferior{position:fixed;bottom:20px;left:0;right:0;display:flex;
     justify-content:center;padding:0 20px;z-index:5;}
   .fila-botones{display:flex;gap:10px;width:100%;max-width:380px;}
@@ -57,7 +61,7 @@
      aquí, el problema es de encuadre/enfoque, no del decodificador. */
   #capturaPreview{position:fixed;top:60px;right:14px;width:150px;
     border:2px solid #FFB35C;border-radius:6px;z-index:6;background:#111;}
-  #debugInfo{position:fixed;top:60px;left:14px;right:170px;color:#FFB35C;
+  #debugInfo{position:fixed;top:100px;left:14px;right:170px;color:#FFB35C;
     font-size:10px;text-shadow:0 1px 3px rgba(0,0,0,.8);z-index:6;
     display:none;white-space:pre-line;}
 
@@ -78,6 +82,7 @@
 
   <button id="cerrar" onclick="window.close()">Cerrar</button>
   <button id="btnTorch" class="oculto" onclick="alternarLinterna()">💡</button>
+  <button id="btnGirar" onclick="girarManual()">🔄 Girar</button>
 
   <div class="barra-inferior">
     <div class="fila-botones">
@@ -96,6 +101,67 @@
     let trackActual = null;
     let torchEncendida = false;
     let procesandoOcr = false;
+
+    // ---------- Corrección de rotación cámara-vs-pantalla ----------
+    // En varios navegadores Android, cuando el celular está en vertical,
+    // lo que se VE en <video> ya está bien orientado (el navegador lo rota
+    // para mostrarlo), pero el buffer de píxeles crudo que drawImage() lee
+    // del <video> sigue siendo el frame horizontal nativo del sensor. Por
+    // eso el recorte fallaba solo en vertical: se estaba recortando sobre
+    // una imagen que en realidad estaba "acostada" 90°.
+    // rotacionManual permite al usuario corregir el sentido si el cálculo
+    // automático adivina la dirección equivocada en su celular específico.
+    let rotacionManual = 0;
+
+    function girarManual() {
+      rotacionManual = (rotacionManual + 90) % 360;
+      document.getElementById('btnGirar').textContent = '🔄 Girar (' + rotacionManual + '°)';
+    }
+
+    function detectarRotacionNecesaria() {
+      const video = document.getElementById('video');
+      const vw = video.videoWidth, vh = video.videoHeight;
+      if (!vw || !vh) return rotacionManual;
+      const videoEsHorizontal = vw > vh;
+      const pantallaEsHorizontal = window.innerWidth > window.innerHeight;
+      const base = (videoEsHorizontal !== pantallaEsHorizontal) ? 90 : 0;
+      return (base + rotacionManual) % 360;
+    }
+
+    // Dibuja el frame actual del video ya rotado a un canvas interno, de
+    // forma que su orientación coincida con lo que se ve en pantalla.
+    // Devuelve {canvas, w, h} con las dimensiones YA corregidas.
+    function obtenerFrameCorregido() {
+      const video = document.getElementById('video');
+      const vw = video.videoWidth, vh = video.videoHeight;
+      if (!vw || !vh) return null;
+      const rot = detectarRotacionNecesaria();
+
+      const tmp = document.createElement('canvas');
+      const ctx = tmp.getContext('2d');
+
+      if (rot === 90 || rot === 270) {
+        tmp.width = vh; tmp.height = vw;
+      } else {
+        tmp.width = vw; tmp.height = vh;
+      }
+
+      ctx.save();
+      if (rot === 90) {
+        ctx.translate(tmp.width, 0);
+        ctx.rotate(Math.PI / 2);
+      } else if (rot === 180) {
+        ctx.translate(tmp.width, tmp.height);
+        ctx.rotate(Math.PI);
+      } else if (rot === 270) {
+        ctx.translate(0, tmp.height);
+        ctx.rotate(-Math.PI / 2);
+      }
+      ctx.drawImage(video, 0, 0, vw, vh);
+      ctx.restore();
+
+      return { canvas: tmp, w: tmp.width, h: tmp.height, rotacionAplicada: rot };
+    }
 
     // Región de captura: un poco más ancha que el recuadro guía visual,
     // para dejar la "zona muda" que CODE_39 necesita a los costados.
@@ -178,9 +244,8 @@
       document.getElementById('btnTorch').classList.toggle('torch-on', torchEncendida);
     }
 
-    function calcularRecorteDesdeGuia() {
+    function calcularRecorteDesdeGuia(vw, vh) {
       const video = document.getElementById('video');
-      const vw = video.videoWidth, vh = video.videoHeight;
       const cw = video.clientWidth, ch = video.clientHeight;
       if (!vw || !vh || !cw || !ch) return null;
 
@@ -209,19 +274,16 @@
       };
     }
 
-    // frameCompleto=true ignora el recuadro guía y usa el frame entero de la
-    // cámara — sirve de respaldo por si el cálculo del recorte no está
-    // alineado con el código en algunos celulares.
     function capturarFrame(filtro, frameCompleto) {
-      const video = document.getElementById('video');
-      if (!video.videoWidth) return null;
-      const w = video.videoWidth, h = video.videoHeight;
+      const corregido = obtenerFrameCorregido();
+      if (!corregido) return null;
+      const w = corregido.w, h = corregido.h;
 
       let recorte;
       if (frameCompleto) {
         recorte = { x: 0, y: 0, w: 1, h: 1 };
       } else {
-        recorte = calcularRecorteDesdeGuia() || RECORTE;
+        recorte = calcularRecorteDesdeGuia(w, h) || RECORTE;
       }
       const cropX = w * recorte.x, cropY = h * recorte.y;
       const cropW = w * recorte.w, cropH = h * recorte.h;
@@ -237,10 +299,12 @@
       const ctx = canvas.getContext('2d');
       ctx.imageSmoothingEnabled = true;
       ctx.filter = filtro || 'none';
-      ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, salidaW, salidaH);
+      ctx.drawImage(corregido.canvas, cropX, cropY, cropW, cropH, 0, 0, salidaW, salidaH);
 
       document.getElementById('debugInfo').textContent =
-        'cámara: ' + w + 'x' + h +
+        'cámara cruda: ' + document.getElementById('video').videoWidth + 'x' + document.getElementById('video').videoHeight +
+        '\nrotación aplicada: ' + corregido.rotacionAplicada + '°' +
+        '\nframe corregido: ' + w + 'x' + h +
         '\nrecorte: ' + Math.round(cropW) + 'x' + Math.round(cropH) +
         (frameCompleto ? ' (frame completo)' : ' (recuadro guía)') +
         '\nenviado al lector: ' + salidaW + 'x' + salidaH;
