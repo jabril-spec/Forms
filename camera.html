@@ -202,14 +202,54 @@
       document.getElementById('btnTorch').classList.toggle('torch-on', torchEncendida);
     }
 
-    // Captura el recuadro guía como canvas, con un filtro de contraste
-    // para ayudar a distinguir mejor las barras/números.
+    // El <video> usa object-fit:cover, así que lo que se ve en pantalla NO es
+    // el frame completo de la cámara: el navegador recorta bordes para llenar
+    // la pantalla (más notorio si la cámara entrega un frame ancho/horizontal
+    // y el celular se sostiene en vertical). Esta función traduce el recuadro
+    // guía (definido en % de PANTALLA) a coordenadas del frame CRUDO de la
+    // cámara, para capturar exactamente lo que el usuario ve y alinea.
+    function calcularRecorteDesdeGuia() {
+      const video = document.getElementById('video');
+      const vw = video.videoWidth, vh = video.videoHeight;
+      const cw = video.clientWidth, ch = video.clientHeight;
+      if (!vw || !vh || !cw || !ch) return null;
+
+      const escala = Math.max(cw / vw, ch / vh); // mismo criterio que object-fit: cover
+      const offsetX = (vw * escala - cw) / 2;
+      const offsetY = (vh * escala - ch) / 2;
+
+      // Recuadro guía en píxeles de pantalla (coincide con el CSS .guia),
+      // con un margen extra de 3% para dejar zona muda alrededor del código.
+      const mx = cw * 0.03, my = ch * 0.03;
+      const dispXmin = Math.max(0, cw * 0.08 - mx);
+      const dispXmax = Math.min(cw, cw * 0.92 + mx);
+      const dispYmin = Math.max(0, ch * 0.35 - my);
+      const dispYmax = Math.min(ch, ch * 0.65 + my);
+
+      const rawXmin = (dispXmin + offsetX) / escala;
+      const rawXmax = (dispXmax + offsetX) / escala;
+      const rawYmin = (dispYmin + offsetY) / escala;
+      const rawYmax = (dispYmax + offsetY) / escala;
+
+      const x = Math.max(0, rawXmin / vw);
+      const y = Math.max(0, rawYmin / vh);
+      return {
+        x: x,
+        y: y,
+        w: Math.min(1, rawXmax / vw) - x,
+        h: Math.min(1, rawYmax / vh) - y
+      };
+    }
+
+    // Captura el recuadro guía (tal como se ve en pantalla) como canvas, con
+    // un filtro opcional para ayudar a distinguir mejor las barras/números.
     function capturarFrame(filtro) {
       const video = document.getElementById('video');
       if (!video.videoWidth) return null;
+      const recorte = calcularRecorteDesdeGuia() || RECORTE;
       const w = video.videoWidth, h = video.videoHeight;
-      const cropX = w * RECORTE.x, cropY = h * RECORTE.y;
-      const cropW = w * RECORTE.w, cropH = h * RECORTE.h;
+      const cropX = w * recorte.x, cropY = h * recorte.y;
+      const cropW = w * recorte.w, cropH = h * recorte.h;
       const canvas = document.getElementById('capturaPreview');
       canvas.width = cropW;
       canvas.height = cropH;
@@ -299,7 +339,7 @@
 
         // Alterna con/sin filtro de contraste entre intentos: en algunas
         // condiciones de luz el filtro ayuda, en otras estorba.
-        const filtro = (intento % 2 === 1) ? 'grayscale(1) contrast(1.4)' : 'none';
+        const filtro = (intento % 2 === 1) ? 'grayscale(1) contrast(1.15)' : 'none';
         const canvas = capturarFrame(filtro);
         if (!canvas) break;
 
