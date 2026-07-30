@@ -117,20 +117,26 @@
     // una imagen que en realidad estaba "acostada" 90°.
     // rotacionManual permite al usuario corregir el sentido si el cálculo
     // automático adivina la dirección equivocada en su celular específico.
-    let rotacionManual = 0;
+    // rotacionManual permite al usuario corregir el sentido si el valor por
+    // defecto no coincide con su celular. Se guarda en localStorage para no
+    // tener que recalibrar cada vez que se abre el escáner en el mismo equipo.
+    let rotacionManual = parseInt(localStorage.getItem('escaner_rotacion_manual') || '0', 10);
+    if (isNaN(rotacionManual) || rotacionManual % 90 !== 0) rotacionManual = 0;
 
     function girarManual() {
       rotacionManual = (rotacionManual + 90) % 360;
-      document.getElementById('btnGirar').textContent = '🔄 Girar (' + rotacionManual + '°)';
+      localStorage.setItem('escaner_rotacion_manual', String(rotacionManual));
+      document.getElementById('btnGirar').textContent = '🔄 Girar (+' + rotacionManual + '°)';
     }
 
     function detectarRotacionNecesaria() {
-      const video = document.getElementById('video');
-      const vw = video.videoWidth, vh = video.videoHeight;
-      if (!vw || !vh) return rotacionManual;
-      const videoEsHorizontal = vw > vh;
+      // La comparación de dimensiones video-vs-pantalla no es confiable
+      // entre fabricantes (algunos ya reportan videoWidth/videoHeight
+      // corregidos aunque el buffer crudo no lo esté). En su lugar: casi
+      // todos los celulares con cámara trasera en vertical necesitan 90°
+      // de corrección por defecto; rotacionManual permite ajustar desde ahí.
       const pantallaEsHorizontal = window.innerWidth > window.innerHeight;
-      const base = (videoEsHorizontal !== pantallaEsHorizontal) ? 90 : 0;
+      const base = pantallaEsHorizontal ? 0 : 90;
       return (base + rotacionManual) % 360;
     }
 
@@ -242,7 +248,9 @@
       }
     }
     iniciarCamara();
-    if (!MOSTRAR_DEBUG) document.getElementById('btnGirar').style.display = 'none';
+    if (rotacionManual !== 0) {
+      document.getElementById('btnGirar').textContent = '🔄 Girar (+' + rotacionManual + '°)';
+    }
 
     function alternarLinterna() {
       if (!trackActual) return;
@@ -498,6 +506,10 @@
         document.getElementById('btnOcr').classList.remove('activo');
         ponerEstado('Error al leer los números, intenta de nuevo.', false);
       }
+    }
+  </script>
+</body>
+</html>
     }
   </script>
 </body>
