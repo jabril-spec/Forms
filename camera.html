@@ -16,25 +16,28 @@
   .guia .etiqueta{position:absolute;top:-26px;left:0;right:0;text-align:center;
     color:#FFB35C;font-size:12px;font-weight:700;text-shadow:0 1px 3px rgba(0,0,0,.7);}
 
-  #estado{position:fixed;bottom:96px;left:0;right:0;text-align:center;
-    font-size:14px;color:#fff;padding:0 24px;text-shadow:0 1px 3px rgba(0,0,0,.6);}
-
-  .tabs-modo{position:fixed;top:14px;left:14px;right:90px;display:flex;gap:8px;z-index:5;}
-  .tabs-modo button{flex:1;padding:9px 6px;border-radius:8px;border:1.5px solid rgba(255,255,255,.5);
-    background:rgba(0,0,0,.4);color:#fff;font-weight:700;font-size:12.5px;}
-  .tabs-modo button.activo{background:#FF7A00;border-color:#FF7A00;}
+  #estado{position:fixed;bottom:100px;left:0;right:0;text-align:center;
+    font-size:14px;color:#fff;padding:0 24px;text-shadow:0 1px 3px rgba(0,0,0,.6);
+    min-height:20px;}
+  #estado.procesando{color:#FFB35C;font-weight:700;}
 
   #cerrar{position:fixed;top:14px;right:14px;background:#fff;color:#12213A;
     border:none;border-radius:8px;padding:8px 14px;font-weight:700;font-size:13px;z-index:5;}
 
   .barra-inferior{position:fixed;bottom:20px;left:0;right:0;display:flex;
-    justify-content:center;gap:12px;padding:0 20px;z-index:5;}
-  .barra-inferior button{border:none;border-radius:10px;padding:13px 20px;
-    font-weight:700;font-size:14.5px;background:#fff;color:#12213A;}
-  .barra-inferior button.torch-on{background:#FF7A00;color:#fff;}
+    flex-direction:column;align-items:center;gap:10px;padding:0 20px;z-index:5;}
+  .fila-botones{display:flex;gap:10px;width:100%;max-width:380px;}
+  .fila-botones button{flex:1;border:none;border-radius:10px;padding:13px 10px;
+    font-weight:700;font-size:13.5px;background:#fff;color:#12213A;}
+  #btnBarras.activo{background:#FF7A00;color:#fff;}
+  #btnOcr.activo{background:#1B9C63;color:#fff;}
+  .fila-botones button:disabled{opacity:.6;}
+  #btnTorch{background:rgba(255,255,255,.85);}
+  #btnTorch.torch-on{background:#FF7A00;color:#fff;}
+  #btnTorch.oculto{display:none;}
 
-  #capturaPreview{position:fixed;bottom:150px;left:50%;transform:translateX(-50%);
-    max-width:70%;border:2px solid #FF7A00;border-radius:8px;display:none;}
+  #capturaPreview{position:fixed;bottom:190px;left:50%;transform:translateX(-50%);
+    max-width:70%;border:2px solid #1B9C63;border-radius:8px;display:none;}
 </style>
 </head>
 <body>
@@ -43,19 +46,19 @@
   <canvas id="capturaPreview"></canvas>
   <div id="estado">Iniciando cámara…</div>
 
-  <div class="tabs-modo">
-    <button id="tabBarras" class="activo" onclick="cambiarModo('barras')">Código de barras</button>
-    <button id="tabOcr" onclick="cambiarModo('ocr')">Leer números</button>
-  </div>
   <button id="cerrar" onclick="window.close()">Cerrar</button>
 
   <div class="barra-inferior">
     <button id="btnTorch" class="oculto" onclick="alternarLinterna()">💡 Linterna</button>
-    <button id="btnCapturar" class="oculto" onclick="capturarYLeerOcr()">📸 Capturar y leer</button>
+    <div class="fila-botones">
+      <button id="btnBarras" class="activo" onclick="activarModoBarras()">📷 Leer código de barras</button>
+      <button id="btnOcr" onclick="capturarYLeerOcr()">🔢 Leer números</button>
+    </div>
   </div>
 
   <script>
-    // ⚠️ IMPORTANTE — usa el origen real de tu web app (ya lo tienes configurado).
+    // El origen real de tu app llega por la URL (Index.html lo agrega automáticamente).
+    // Si no llega ninguno, se usa '*' como respaldo.
     const params = new URLSearchParams(window.location.search);
     const ORIGEN_APP = params.get('origen') || '*';
 
@@ -71,8 +74,14 @@
       return m ? m[0] : String(texto).replace(/\D/g, '').slice(0, 8);
     }
 
+    function ponerEstado(texto, procesando) {
+      const el = document.getElementById('estado');
+      el.textContent = texto;
+      el.classList.toggle('procesando', !!procesando);
+    }
+
     function enviarDni(dni) {
-      document.getElementById('estado').textContent = 'DNI detectado: ' + dni;
+      ponerEstado('DNI detectado: ' + dni, false);
       if (navigator.vibrate) navigator.vibrate(120);
       if (window.opener) {
         window.opener.postMessage({ tipo: 'dni-detectado', dni: dni }, ORIGEN_APP);
@@ -80,55 +89,48 @@
       setTimeout(function () { window.close(); }, 700);
     }
 
-    function cambiarModo(nuevoModo) {
-      modo = nuevoModo;
-      const esBarras = modo === 'barras';
-      document.getElementById('tabBarras').classList.toggle('activo', esBarras);
-      document.getElementById('tabOcr').classList.toggle('activo', !esBarras);
-      document.getElementById('etiquetaGuia').textContent = esBarras ? 'Código de barras' : 'Número de DNI';
-      document.getElementById('btnCapturar').classList.toggle('oculto', esBarras);
-      document.getElementById('estado').textContent = esBarras
-        ? 'Apunta al código de barras del DNI.'
-        : 'Encuadra los 8 números del DNI y presiona "Capturar y leer".';
+    function activarModoBarras() {
+      modo = 'barras';
+      document.getElementById('btnBarras').classList.add('activo');
+      document.getElementById('btnOcr').classList.remove('activo');
+      document.getElementById('etiquetaGuia').textContent = 'Código de barras';
+      ponerEstado('Apunta al código de barras del DNI.', false);
     }
 
-    // ---------- Cámara ----------
-    navigator.mediaDevices.getUserMedia({
+    // ---------- Cámara + escaneo continuo de código de barras ----------
+    const hints = new Map();
+    hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+    lector = new ZXing.BrowserMultiFormatReader(hints);
+
+    const constraints = {
       video: {
         facingMode: { ideal: 'environment' },
         width: { ideal: 1920 },
         height: { ideal: 1080 }
       }
-    }).then(function (stream) {
-      const video = document.getElementById('video');
-      video.srcObject = stream;
-      trackActual = stream.getVideoTracks()[0];
+    };
 
-      // Linterna, si el dispositivo la soporta
+    lector.decodeFromConstraints(constraints, 'video', function (resultado) {
+      if (!resultado || modo !== 'barras') return;
+      const ahora = Date.now();
+      if (ahora < bloqueadoHasta) return;
+      const dni = extraerDni(resultado.getText());
+      if (dni.length !== 8) return;
+      bloqueadoHasta = ahora + 2500;
+      enviarDni(dni);
+    }).catch(function () {
+      ponerEstado('No se pudo acceder a la cámara (revisa los permisos del navegador).', false);
+    });
+
+    document.getElementById('video').addEventListener('loadedmetadata', function () {
+      const video = document.getElementById('video');
+      if (!video.srcObject) return;
+      trackActual = video.srcObject.getVideoTracks()[0];
       const capacidades = trackActual.getCapabilities ? trackActual.getCapabilities() : {};
       if (capacidades.torch) {
         document.getElementById('btnTorch').classList.remove('oculto');
       }
-
-      // Lector de código de barras con "buscar más a fondo"
-      const hints = new Map();
-      hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
-      lector = new ZXing.BrowserMultiFormatReader(hints);
-
-      lector.decodeFromVideoElement(video, function (resultado) {
-        if (!resultado || modo !== 'barras') return;
-        const ahora = Date.now();
-        if (ahora < bloqueadoHasta) return;
-        const dni = extraerDni(resultado.getText());
-        if (dni.length !== 8) return;
-        bloqueadoHasta = ahora + 2500;
-        enviarDni(dni);
-      });
-
-      cambiarModo('barras');
-    }).catch(function () {
-      document.getElementById('estado').textContent =
-        'No se pudo acceder a la cámara (revisa los permisos del navegador).';
+      ponerEstado('Apunta al código de barras del DNI.', false);
     });
 
     function alternarLinterna() {
@@ -144,10 +146,16 @@
       const video = document.getElementById('video');
       if (!video.videoWidth) return;
 
-      ocrEnProceso = true;
-      document.getElementById('estado').textContent = 'Leyendo números…';
+      modo = 'ocr';
+      document.getElementById('btnOcr').classList.add('activo');
+      document.getElementById('btnBarras').classList.remove('activo');
+      document.getElementById('etiquetaGuia').textContent = 'Número de DNI';
 
-      // Recorta la zona de la guía (aprox.) para no procesar la imagen completa
+      ocrEnProceso = true;
+      document.getElementById('btnOcr').disabled = true;
+      document.getElementById('btnBarras').disabled = true;
+      ponerEstado('Procesando… 0%', true);
+
       const w = video.videoWidth, h = video.videoHeight;
       const cropX = w * 0.08, cropY = h * 0.35, cropW = w * 0.84, cropH = h * 0.30;
 
@@ -159,22 +167,33 @@
       ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
 
       Tesseract.recognize(canvas, 'eng', {
-        tessedit_char_whitelist: '0123456789'
+        tessedit_char_whitelist: '0123456789',
+        logger: function (m) {
+          if (m.status === 'recognizing text') {
+            ponerEstado('Procesando… ' + Math.round(m.progress * 100) + '%', true);
+          } else if (m.status) {
+            ponerEstado('Procesando (' + m.status + ')…', true);
+          }
+        }
       }).then(function (resultado) {
         canvas.style.display = 'none';
         ocrEnProceso = false;
+        document.getElementById('btnOcr').disabled = false;
+        document.getElementById('btnBarras').disabled = false;
+
         const texto = resultado.data.text || '';
         const dni = extraerDni(texto);
         if (dni.length === 8) {
           enviarDni(dni);
         } else {
-          document.getElementById('estado').textContent =
-            'No se pudo leer un DNI válido, intenta de nuevo con más luz o encuadre.';
+          ponerEstado('No se pudo leer un DNI válido. Intenta con más luz o mejor encuadre.', false);
         }
       }).catch(function () {
         canvas.style.display = 'none';
         ocrEnProceso = false;
-        document.getElementById('estado').textContent = 'Error al leer los números, intenta de nuevo.';
+        document.getElementById('btnOcr').disabled = false;
+        document.getElementById('btnBarras').disabled = false;
+        ponerEstado('Error al leer los números, intenta de nuevo.', false);
       });
     }
   </script>
