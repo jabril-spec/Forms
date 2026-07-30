@@ -198,17 +198,32 @@
       return canvas;
     }
 
+    // Carga el canvas capturado como un <img> real. La variante de dos
+    // argumentos decodeFromImage(undefined, dataUrl) resultó no decodificar
+    // nunca (por eso fallaba con CUALQUIER formato, incluidos códigos limpios
+    // generados en la web) — la forma confiable de la librería es pasarle un
+    // elemento <img> ya cargado.
+    function canvasComoImagen(canvas) {
+      return new Promise(function (resolve, reject) {
+        const img = new Image();
+        img.onload = function () { resolve(img); };
+        img.onerror = function () { reject(new Error('No se pudo preparar la imagen capturada.')); };
+        img.src = canvas.toDataURL('image/png');
+      });
+    }
+
     // Un solo intento de decodificación sobre una imagen ya capturada.
     // Prueba primero el lector rápido (solo CODE_39) y si falla, el amplio
     // (todos los formatos). Devuelve el DNI de 8 dígitos o null.
-    async function intentarDecodificar(dataUrl) {
+    async function intentarDecodificar(canvas) {
+      const img = await canvasComoImagen(canvas);
       try {
-        const r = await lectorRapido.decodeFromImage(undefined, dataUrl);
+        const r = await lectorRapido.decodeFromImage(img);
         const dni = extraerDni(r.getText());
         return dni.length === 8 ? dni : null;
       } catch (e1) {
         try {
-          const r2 = await lectorAmplio.decodeFromImage(undefined, dataUrl);
+          const r2 = await lectorAmplio.decodeFromImage(img);
           const dni2 = extraerDni(r2.getText());
           return dni2.length === 8 ? dni2 : null;
         } catch (e2) {
@@ -243,11 +258,13 @@
       for (let intento = 1; intento <= INTENTOS_MAXIMOS_BARRAS && !dniGanador; intento++) {
         iniciarIndicadorEscaneo('Leyendo código de barras (' + intento + '/' + INTENTOS_MAXIMOS_BARRAS + ')');
 
-        const canvas = capturarFrame('grayscale(1) contrast(1.4)');
+        // Alterna con/sin filtro de contraste entre intentos: en algunas
+        // condiciones de luz el filtro ayuda, en otras estorba.
+        const filtro = (intento % 2 === 1) ? 'grayscale(1) contrast(1.4)' : 'none';
+        const canvas = capturarFrame(filtro);
         if (!canvas) break;
-        const dataUrl = canvas.toDataURL('image/png');
 
-        const dni = await intentarDecodificar(dataUrl);
+        const dni = await intentarDecodificar(canvas);
         if (dni) {
           votos[dni] = (votos[dni] || 0) + 1;
           if (votos[dni] >= VOTOS_PARA_CONFIAR) {
