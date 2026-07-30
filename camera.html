@@ -101,6 +101,27 @@
     hintsAmplio.set(ZXing.DecodeHintType.TRY_HARDER, true);
     const lectorAmplio = new ZXing.BrowserMultiFormatReader(hintsAmplio);
 
+    // Lectores "de bajo nivel": decodifican directo desde los píxeles del
+    // canvas (getImageData), sin pasar por un <img> ni por el envoltorio del
+    // navegador. Es el camino más directo que ofrece la librería, así que lo
+    // probamos primero; decodeFromImage queda como respaldo más abajo.
+    let nucleoRapido = null, nucleoAmplio = null;
+    if (ZXing.MultiFormatReader && ZXing.RGBLuminanceSource && ZXing.HybridBinarizer) {
+      nucleoRapido = new ZXing.MultiFormatReader();
+      nucleoRapido.setHints(hintsRapido);
+      nucleoAmplio = new ZXing.MultiFormatReader();
+      nucleoAmplio.setHints(hintsAmplio);
+    }
+
+    function decodificarCanvasNucleo(reader, canvas) {
+      const ctx = canvas.getContext('2d');
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const luminanceSource = new ZXing.RGBLuminanceSource(imageData.data, canvas.width, canvas.height);
+      const binaryBitmap = new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(luminanceSource));
+      reader.reset();
+      return reader.decode(binaryBitmap); // síncrono: devuelve Result o lanza excepción
+    }
+
     function extraerDni(texto) {
       const m = String(texto).match(/\d{8}/);
       return m ? m[0] : String(texto).replace(/\D/g, '').slice(0, 8);
@@ -127,6 +148,7 @@
         intervaloEscaneo = null;
       }
     }
+
 
     function actualizarBotones() {
       document.getElementById('btnBarras').disabled = procesando;
@@ -212,24 +234,34 @@
       });
     }
 
-    // Un solo intento de decodificación sobre una imagen ya capturada.
-    // Prueba primero el lector rápido (solo CODE_39) y si falla, el amplio
-    // (todos los formatos). Devuelve el DNI de 8 dígitos o null.
+    let ultimoErrorBarras = null;
+
+    // Un solo intento de decodificación sobre un canvas ya capturado.
+    // Orden: 1) núcleo rápido (CODE_39, directo sobre píxeles), 2) núcleo
+    // amplio (todos los formatos), 3) respaldo vía <img> + decodeFromImage.
     async function intentarDecodificar(canvas) {
-      const img = await canvasComoImagen(canvas);
-      try {
-        const r = await lectorRapido.decodeFromImage(img);
-        const dni = extraerDni(r.getText());
-        return dni.length === 8 ? dni : null;
-      } catch (e1) {
+      if (nucleoRapido) {
         try {
-          const r2 = await lectorAmplio.decodeFromImage(img);
+          const r = decodificarCanvasNucleo(nucleoRapido, canvas);
+          const dni = extraerDni(r.getText());
+          if (dni.length === 8) return dni;
+        } catch (eA) { ultimoErrorBarras = eA; }
+
+        try {
+          const r2 = decodificarCanvasNucleo(nucleoAmplio, canvas);
           const dni2 = extraerDni(r2.getText());
-          return dni2.length === 8 ? dni2 : null;
-        } catch (e2) {
-          return null;
-        }
+          if (dni2.length === 8) return dni2;
+        } catch (eB) { ultimoErrorBarras = eB; }
       }
+
+      try {
+        const img = await canvasComoImagen(canvas);
+        const r3 = await lectorRapido.decodeFromImage(img);
+        const dni3 = extraerDni(r3.getText());
+        if (dni3.length === 8) return dni3;
+      } catch (eC) { ultimoErrorBarras = eC; }
+
+      return null;
     }
 
     // ---------- Código de barras: ráfaga de capturas + validación por consenso ----------
@@ -239,6 +271,12 @@
     // lecturas incorrectas en vez de aceptar la primera que aparezca.
     async function leerCodigoBarras() {
       if (procesando) return;
+
+      if (typeof ZXing === 'undefined' || !ZXing.BrowserMultiFormatReader) {
+        ponerEstado('No se pudo cargar la librería de código de barras. Revisa tu conexión y recarga esta página.', false);
+        return;
+      }
+
       procesando = true;
       actualizarBotones();
       document.getElementById('btnBarras').classList.add('activo');
@@ -254,6 +292,7 @@
 
       const votos = {};
       let dniGanador = null;
+      ultimoErrorBarras = null;
 
       for (let intento = 1; intento <= INTENTOS_MAXIMOS_BARRAS && !dniGanador; intento++) {
         iniciarIndicadorEscaneo('Leyendo código de barras (' + intento + '/' + INTENTOS_MAXIMOS_BARRAS + ')');
@@ -286,7 +325,10 @@
       if (dniGanador) {
         enviarDni(dniGanador);
       } else {
-        ponerEstado('No se pudo leer el código de forma confiable. Acércate más, evita reflejos y vuelve a intentar.', false);
+        const detalle = ultimoErrorBarras
+          ? ' [detalle: ' + (ultimoErrorBarras.name || 'Error') + ': ' + (ultimoErrorBarras.message || ultimoErrorBarras) + ']'
+          : '';
+        ponerEstado('No se pudo leer el código de forma confiable. Acércate más, evita reflejos y vuelve a intentar.' + detalle, false);
       }
     }
 
