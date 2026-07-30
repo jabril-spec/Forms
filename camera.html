@@ -60,7 +60,8 @@
     // El origen real de tu app llega por la URL (Index.html lo agrega automáticamente).
     // Si no llega ninguno, se usa '*' como respaldo.
     const params = new URLSearchParams(window.location.search);
-    const ORIGEN_APP = params.get('origen') || '*';
+    
+    const ORIGEN_APP = 'https://script.google.com/macros/s/AKfycbxQnVR4BpUYMjcGnA74vznqx94fflzBRoGJyb_ovOFaQibqpfoimQaWOgQwJq5j12WNTw/exec';
 
     let modo = 'barras';
     let lector = null;
