@@ -56,7 +56,8 @@
 
   <script>
     // ⚠️ IMPORTANTE — usa el origen real de tu web app (ya lo tienes configurado).
-    const ORIGEN_APP = 'https://script.google.com/macros/s/AKfycbxQnVR4BpUYMjcGnA74vznqx94fflzBRoGJyb_ovOFaQibqpfoimQaWOgQwJq5j12WNTw/exec';
+    const params = new URLSearchParams(window.location.search);
+    const ORIGEN_APP = params.get('origen') || '*';
 
     let modo = 'barras';
     let lector = null;
