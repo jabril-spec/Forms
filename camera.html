@@ -140,14 +140,25 @@
       return (base + rotacionManual) % 360;
     }
 
-    // Dibuja el frame actual del video ya rotado a un canvas interno, de
-    // forma que su orientación coincida con lo que se ve en pantalla.
-    // Devuelve {canvas, w, h} con las dimensiones YA corregidas.
-    function obtenerFrameCorregido() {
+    // Dibuja el frame actual del video a un canvas interno. aplicarRotacion
+    // controla si se corrige el desfase de orientación: el código de barras
+    // del DNI parece estar impreso en una orientación distinta al número
+    // impreso, así que cada modo necesita su propio tratamiento — NO
+    // conviene aplicar la misma corrección a los dos.
+    // Devuelve {canvas, w, h} con las dimensiones YA corregidas (o crudas
+    // si aplicarRotacion es false).
+    function obtenerFrameCorregido(aplicarRotacion) {
       const video = document.getElementById('video');
       const vw = video.videoWidth, vh = video.videoHeight;
       if (!vw || !vh) return null;
-      const rot = detectarRotacionNecesaria();
+      const rot = aplicarRotacion ? detectarRotacionNecesaria() : 0;
+
+      if (rot === 0) {
+        const tmp = document.createElement('canvas');
+        tmp.width = vw; tmp.height = vh;
+        tmp.getContext('2d').drawImage(video, 0, 0, vw, vh);
+        return { canvas: tmp, w: vw, h: vh, rotacionAplicada: 0 };
+      }
 
       const tmp = document.createElement('canvas');
       const ctx = tmp.getContext('2d');
@@ -289,8 +300,9 @@
       };
     }
 
-    function capturarFrame(filtro, frameCompleto) {
-      const corregido = obtenerFrameCorregido();
+    function capturarFrame(filtro, frameCompleto, aplicarRotacion) {
+      if (aplicarRotacion === undefined) aplicarRotacion = true;
+      const corregido = obtenerFrameCorregido(aplicarRotacion);
       if (!corregido) return null;
       const w = corregido.w, h = corregido.h;
 
@@ -468,7 +480,7 @@
       document.getElementById('btnOcr').classList.add('activo');
       document.getElementById('etiquetaGuia').textContent = 'Número de DNI';
 
-      const canvas = capturarFrame('grayscale(1) contrast(1.25)');
+      const canvas = capturarFrame('grayscale(1) contrast(1.25)', false, false);
       if (!canvas) {
         procesandoOcr = false;
         document.getElementById('btnBarras').disabled = false;
@@ -506,10 +518,6 @@
         document.getElementById('btnOcr').classList.remove('activo');
         ponerEstado('Error al leer los números, intenta de nuevo.', false);
       }
-    }
-  </script>
-</body>
-</html>
     }
   </script>
 </body>
