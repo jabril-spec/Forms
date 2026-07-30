@@ -102,6 +102,12 @@
     let torchEncendida = false;
     let procesandoOcr = false;
 
+    // Ya confirmado que la rotación automática funciona correctamente en el
+    // celular de prueba. Para producción se ocultan la miniatura, el texto
+    // técnico y el botón "Girar" — si en el futuro aparece un celular que
+    // lea distinto, cambia esto a true para volver a ver el diagnóstico.
+    const MOSTRAR_DEBUG = false;
+
     // ---------- Corrección de rotación cámara-vs-pantalla ----------
     // En varios navegadores Android, cuando el celular está en vertical,
     // lo que se VE en <video> ya está bien orientado (el navegador lo rota
@@ -236,6 +242,7 @@
       }
     }
     iniciarCamara();
+    if (!MOSTRAR_DEBUG) document.getElementById('btnGirar').style.display = 'none';
 
     function alternarLinterna() {
       if (!trackActual) return;
@@ -391,8 +398,10 @@
       document.getElementById('btnOcr').classList.remove('activo');
       document.getElementById('etiquetaGuia').textContent = 'Escaneando…';
       document.getElementById('guia').classList.add('escaneando');
-      document.getElementById('capturaPreview').style.display = 'block';
-      document.getElementById('debugInfo').style.display = 'block';
+      if (MOSTRAR_DEBUG) {
+        document.getElementById('capturaPreview').style.display = 'block';
+        document.getElementById('debugInfo').style.display = 'block';
+      }
 
       cicloEscanearFrame();
     }
@@ -414,12 +423,12 @@
       if (!escaneoActivo) return;
       intentoNum++;
 
-      // Alterna con/sin filtro de contraste entre intentos: en algunas
-      // condiciones de luz ayuda, en otras estorba. Cada 3er intento usa
-      // el frame COMPLETO (sin recorte) como respaldo, por si el cálculo
-      // del recuadro guía no está bien alineado en este celular/navegador.
+      // Ya confirmado que la rotación automática funciona bien: el recorte
+      // del recuadro guía es más rápido de decodificar que el frame completo,
+      // así que se prioriza. El frame completo (más lento) solo se prueba
+      // como respaldo si llevamos varios intentos seguidos sin resultado.
       const filtro = (intentoNum % 2 === 1) ? 'grayscale(1) contrast(1.15)' : 'none';
-      const usarFrameCompleto = (intentoNum % 3 === 0);
+      const usarFrameCompleto = (intentoNum > 8 && intentoNum % 4 === 0);
       const canvas = capturarFrame(filtro, usarFrameCompleto);
 
       if (canvas) {
@@ -439,7 +448,7 @@
       if (escaneoActivo) {
         // Pausa corta entre intentos: deja que la cámara entregue un frame
         // distinto y evita saturar el hilo principal en celulares más lentos.
-        cicloEscaneoId = setTimeout(cicloEscanearFrame, 120);
+        cicloEscaneoId = setTimeout(cicloEscanearFrame, 90);
       }
     }
 
