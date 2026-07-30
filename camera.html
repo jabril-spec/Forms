@@ -80,8 +80,14 @@
     let procesando = false;
     let intervaloEscaneo = null;
 
-    // Región de captura (misma zona que marca el recuadro guía en pantalla).
-    const RECORTE = { x: 0.08, y: 0.35, w: 0.84, h: 0.30 };
+    // Región de captura. Un poco más ancha que el recuadro guía visual, para
+    // asegurar el margen en blanco ("zona muda") que CODE_39 necesita a los
+    // costados del código — si se recorta justo al borde del código, ZXing
+    // puede no detectarlo o leerlo mal.
+    const RECORTE = { x: 0.04, y: 0.32, w: 0.92, h: 0.36 };
+
+    const INTENTOS_MAXIMOS_BARRAS = 6;
+    const VOTOS_PARA_CONFIAR = 2;
 
     // Lector "rápido": solo intenta CODE_39 (el formato usado en el DNI peruano),
     // así evita perder tiempo probando los ~15 formatos que soporta ZXing.
@@ -154,6 +160,12 @@
         if (capacidades.torch) {
           document.getElementById('btnTorch').classList.remove('oculto');
         }
+        // Enfoque continuo: en varios celulares la cámara se queda enfocada
+        // a distancia larga si no se le pide explícitamente. Si el navegador
+        // no lo soporta, esto simplemente no hace nada (catch silencioso).
+        if (capacidades.focusMode && capacidades.focusMode.includes('continuous')) {
+          trackActual.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(function () {});
+        }
         ponerEstado('Encuadra el DNI y presiona el botón que corresponda.', false);
       } catch (e) {
         ponerEstado('No se pudo acceder a la cámara (revisa los permisos del navegador).', false);
@@ -186,7 +198,30 @@
       return canvas;
     }
 
-    // ---------- Código de barras: captura y decodifica, igual que el OCR ----------
+    // Un solo intento de decodificación sobre una imagen ya capturada.
+    // Prueba primero el lector rápido (solo CODE_39) y si falla, el amplio
+    // (todos los formatos). Devuelve el DNI de 8 dígitos o null.
+    async function intentarDecodificar(dataUrl) {
+      try {
+        const r = await lectorRapido.decodeFromImage(undefined, dataUrl);
+        const dni = extraerDni(r.getText());
+        return dni.length === 8 ? dni : null;
+      } catch (e1) {
+        try {
+          const r2 = await lectorAmplio.decodeFromImage(undefined, dataUrl);
+          const dni2 = extraerDni(r2.getText());
+          return dni2.length === 8 ? dni2 : null;
+        } catch (e2) {
+          return null;
+        }
+      }
+    }
+
+    // ---------- Código de barras: ráfaga de capturas + validación por consenso ----------
+    // Una sola foto puede salir borrosa o el lector puede "alucinar" un
+    // resultado con ruido. Por eso se toman varias fotos seguidas y solo se
+    // acepta un DNI si se leyó igual al menos 2 veces — así se filtran las
+    // lecturas incorrectas en vez de aceptar la primera que aparezca.
     async function leerCodigoBarras() {
       if (procesando) return;
       procesando = true;
@@ -195,44 +230,46 @@
       document.getElementById('btnOcr').classList.remove('activo');
       document.getElementById('etiquetaGuia').textContent = 'Código de barras';
 
-      const canvas = capturarFrame('grayscale(1) contrast(1.4)');
-      if (!canvas) {
+      if (!document.getElementById('video').videoWidth) {
         procesando = false;
         actualizarBotones();
         ponerEstado('La cámara aún no está lista, espera un momento.', false);
         return;
       }
-      iniciarIndicadorEscaneo('Leyendo código de barras');
-      const dataUrl = canvas.toDataURL('image/png');
 
-      try {
-        const resultado = await lectorRapido.decodeFromImage(undefined, dataUrl);
-        finalizarLecturaBarras(resultado.getText());
-      } catch (e1) {
-        ponerEstado('Probando otros formatos de código…', true);
-        try {
-          const resultado2 = await lectorAmplio.decodeFromImage(undefined, dataUrl);
-          finalizarLecturaBarras(resultado2.getText());
-        } catch (e2) {
-          canvas.style.display = 'none';
-          detenerIndicadorEscaneo();
-          procesando = false;
-          actualizarBotones();
-          ponerEstado('No se pudo leer el código de barras. Acércate más o mejora la luz e intenta de nuevo.', false);
+      const votos = {};
+      let dniGanador = null;
+
+      for (let intento = 1; intento <= INTENTOS_MAXIMOS_BARRAS && !dniGanador; intento++) {
+        iniciarIndicadorEscaneo('Leyendo código de barras (' + intento + '/' + INTENTOS_MAXIMOS_BARRAS + ')');
+
+        const canvas = capturarFrame('grayscale(1) contrast(1.4)');
+        if (!canvas) break;
+        const dataUrl = canvas.toDataURL('image/png');
+
+        const dni = await intentarDecodificar(dataUrl);
+        if (dni) {
+          votos[dni] = (votos[dni] || 0) + 1;
+          if (votos[dni] >= VOTOS_PARA_CONFIAR) {
+            dniGanador = dni;
+            break;
+          }
         }
-      }
-    }
 
-    function finalizarLecturaBarras(texto) {
-      const dni = extraerDni(texto);
+        // Pequeña pausa entre intentos para que la cámara entregue un frame
+        // distinto (ayuda si el enfoque automático aún está ajustando).
+        await new Promise(function (r) { setTimeout(r, 180); });
+      }
+
       document.getElementById('capturaPreview').style.display = 'none';
       detenerIndicadorEscaneo();
       procesando = false;
       actualizarBotones();
-      if (dni.length === 8) {
-        enviarDni(dni);
+
+      if (dniGanador) {
+        enviarDni(dniGanador);
       } else {
-        ponerEstado('El código leído no contiene un DNI de 8 dígitos válido. Intenta de nuevo.', false);
+        ponerEstado('No se pudo leer el código de forma confiable. Acércate más, evita reflejos y vuelve a intentar.', false);
       }
     }
 
